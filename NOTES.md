@@ -125,4 +125,46 @@ read 10,012, loaded 9,973 (fixed 58), rejected 23, duplicated 8, quarantined 8
 
 ### API
 
-_Pending (Part 2): filtering, keyset pagination on `id`, index usage and connection pool behavior._
+Measured with `EXPLAIN ANALYZE` on 1M generated rows (table 128 MB, indexes 124 MB):
+
+| Query | Plan | Time |
+| --- | --- | --- |
+| Page 1 (`order by id limit 21`) | primary key index | 0.1 ms |
+| Page 40,000 with the cursor (`id > 800000`) | primary key index | 0.1 ms |
+| Page 40,000 with `OFFSET 800000`, for comparison | reads and discards 800,000 rows | 219 ms |
+| `country=Japan` on a deep page | primary key, filters 389 rows | 0.2 ms |
+| A rare range (`min_bmi=37.9`) | `bmi` index, then sort | 0.1 ms |
+| Summary by country, `min_age=30` | parallel sequential scan | ~85 ms |
+| Unindexed filters that match almost nothing | walks the whole primary key | 180 ms |
+
+- **Pagination does not degrade with depth**: the cursor turns "page N" into an index seek. `OFFSET` grows linearly and would take seconds per request at tens of millions of rows.
+- **Common filters stay cheap** because they match many rows: walking the primary key in order stops after `limit` matches. Indexes matter for selective ranges, where Postgres switches to the column index and sorts the few matches.
+- **Worst case**: a combination of filters that matches almost nothing, on columns without a selective index, scans the whole table (180 ms at 1M rows, roughly 18 s at 100M). Mitigations, not implemented: a `statement_timeout` on the API's connections so one request cannot hold a connection for long, composite indexes for combinations that real traffic uses, or a materialized summary table.
+- **Index cost on writes**: the four secondary indexes cost ~9 s per million rows on the load (see Loader). Each one was chosen for a filter that can be selective; low-cardinality columns are not indexed.
+- **Summary** reads every matching row by design. At tens of millions of rows it should come from a pre-aggregated table refreshed after each import.
+
+### Connections under concurrent load
+
+- Endpoints are synchronous (`def`), so FastAPI runs them in its thread pool (40 threads by default). Each request borrows one connection from a `psycopg_pool` pool of at most 10 and returns it when the response is built.
+- With more than 10 concurrent requests, the rest wait for a free connection. That is deliberate: Postgres handles a few busy connections better than many, and the limit protects the database. A request that waits longer than the pool timeout (30 s by default) fails with a 500.
+- Every query is a single indexed statement, so connections are held for milliseconds and the pool turns over quickly. The slow cases above are the ones that would exhaust it, which is why a `statement_timeout` is the first thing I would add.
+- With several API processes, the total is processes × 10 connections; beyond Postgres' `max_connections` that calls for PgBouncer in transaction mode.
+
+## API
+
+`GET /records` returns filtered records ordered by `id`:
+
+| Parameter | Behavior |
+| --- | --- |
+| `country`, `gender`, `sleep_quality`, `stress_level` | Exact match on the allowed values; repeat the parameter to select several (`?country=Japan&country=Spain`, OR). |
+| `min_age` / `max_age`, `min_coffee_intake` / `max_coffee_intake`, `min_bmi` / `max_bmi`, `min_sleep_hours` / `max_sleep_hours` | Inclusive ranges. |
+| `limit` | 1–100, default 20. |
+| `cursor` | The `next_cursor` of the previous page. |
+
+All filters combine with AND. The response is `{"items": [...], "next_cursor": "..."}`; `next_cursor` is `null` on the last page.
+
+- **Keyset pagination on `id`**, the primary key: unique and stable, so no row is repeated or skipped between pages. The cursor is opaque (base64 of the last id) so the sort can change later without breaking clients. There is no total count: it would need to count every matching row on every request.
+- **422 errors** for `min_*` greater than `max_*`, values outside the allowed categories (`gender=male`), an invalid cursor, `limit` out of range, and **unknown parameters**: a typo like `contry=Japan` is rejected instead of silently returning every row.
+- Category values are case-sensitive and must match the canonical spelling; the allowed values are listed in `/docs`.
+
+`GET /records/summary?group_by=country` (also `gender`, `sleep_quality`, `stress_level`, `occupation`) returns count and average sleep hours, coffee intake and BMI per group, with the same filters.

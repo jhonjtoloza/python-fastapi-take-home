@@ -1,6 +1,7 @@
 from collections.abc import Iterator
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, Request
 from psycopg import Connection
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import ConnectionPool
@@ -29,3 +30,6 @@ def get_conn(request: Request) -> Iterator[Connection[DictRow]]:
     pool: Pool = request.app.state.pool
     with pool.connection() as conn:
         yield conn
+
+
+Conn = Annotated[Connection[DictRow], Depends(get_conn)]
