@@ -1,17 +1,11 @@
 import hashlib
-from collections.abc import Iterator
 from pathlib import Path
-from uuid import uuid4
 
 import psycopg
 import pytest
-from psycopg import sql
-from psycopg.conninfo import make_conninfo
 
-from app.config import settings
 from scripts.load_data import PROMOTE_CONFLICT, LoaderError, load
 
-INIT_SQL = sorted(Path(__file__).resolve().parents[1].joinpath("db", "init").glob("*.sql"))
 HEADER = (
     "ID,Age,Gender,Country,Coffee_Intake,Caffeine_mg,Sleep_Hours,Sleep_Quality,BMI,"
     "Heart_Rate,Stress_Level,Physical_Activity_Hours,Health_Issues,Occupation,Smoking,"
@@ -21,25 +15,6 @@ HEADER = (
 
 def line(id_: int, age: str = "40", gender: str = "Male") -> str:
     return f"{id_},{age},{gender},Germany,3.5,328.1,7.5,Good,24.9,78,Low,14.5,None,Other,0,0"
-
-
-@pytest.fixture
-def database_url() -> Iterator[str]:
-    """A throwaway database with the real schema, so tests never touch loaded data."""
-    name = f"coffee_test_{uuid4().hex[:12]}"
-    with psycopg.connect(settings.database_url, autocommit=True) as admin:
-        admin.execute(sql.SQL("create database {}").format(sql.Identifier(name)))
-    url = make_conninfo(settings.database_url, dbname=name)
-    try:
-        with psycopg.connect(url, autocommit=True) as conn:
-            for path in INIT_SQL:
-                conn.execute(path.read_text())
-        yield url
-    finally:
-        with psycopg.connect(settings.database_url, autocommit=True) as admin:
-            admin.execute(
-                sql.SQL("drop database if exists {} with (force)").format(sql.Identifier(name))
-            )
 
 
 def write_csv(tmp_path: Path, *lines: str, name: str = "data.csv") -> Path:

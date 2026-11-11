@@ -4,6 +4,15 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
+from app.domain import (
+    COUNTRIES,
+    GENDERS,
+    HEALTH_ISSUES,
+    OCCUPATIONS,
+    SLEEP_QUALITIES,
+    STRESS_LEVELS,
+)
+
 COLUMNS = (
     "ID",
     "Age",
@@ -32,35 +41,6 @@ CAFFEINE_MG_RANGE = (Decimal(0), Decimal(3000))
 SLEEP_HOURS_RANGE = (Decimal(0), Decimal(24))
 BMI_RANGE = (Decimal(10), Decimal(80))
 PHYSICAL_ACTIVITY_RANGE = (Decimal(0), Decimal(168))
-
-GENDERS = ("Male", "Female", "Other")
-SLEEP_QUALITIES = ("Poor", "Fair", "Good", "Excellent")
-STRESS_LEVELS = ("Low", "Medium", "High")
-HEALTH_ISSUES = ("None", "Mild", "Moderate", "Severe")
-OCCUPATIONS = ("Office", "Healthcare", "Service", "Student", "Other")
-# A closed list: an unknown spelling is rejected instead of becoming a new filter value.
-COUNTRIES = (
-    "Australia",
-    "Belgium",
-    "Brazil",
-    "Canada",
-    "China",
-    "Finland",
-    "France",
-    "Germany",
-    "India",
-    "Italy",
-    "Japan",
-    "Mexico",
-    "Netherlands",
-    "Norway",
-    "South Korea",
-    "Spain",
-    "Sweden",
-    "Switzerland",
-    "UK",
-    "USA",
-)
 
 # "0" and "1" are the canonical spellings; the others are accepted and counted as fixed.
 BOOLEANS = {
