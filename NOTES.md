@@ -113,6 +113,20 @@ read 10,012, loaded 9,973 (fixed 58), rejected 23, duplicated 8, quarantined 8
 
 `read = loaded + rejected + duplicated + quarantined`. Blank lines (3) are not records and are not counted. `select count(*) from coffee_health` returns 9,973.
 
+## Tests and code quality
+
+`make test` runs 81 tests. Behavior was written test-first: each rule had a failing test before its code.
+
+| File | Tests | Database |
+| --- | --- | --- |
+| `tests/test_validation.py` | 47: every fix, every rejection reason, inclusive limits, column count | **None**. Validation is pure functions; the file passes with `DATABASE_URL` pointing to an unreachable host. |
+| `tests/test_loader.py` | 7: counts and stored rows, idempotent re-run, upsert of a changed file, malformed CSV, wrong header, abandoned import, promoting a quarantined row | Real Postgres |
+| `tests/test_records_api.py` | 25: `TestClient` against the app with filters, pagination, summary and every 422 case | Real Postgres |
+| `tests/test_health.py` | 2: the original `/health` and `/notes` checks | Real Postgres, the `coffee` database |
+
+- Database tests create a throwaway database (`coffee_test_<random>`), apply `db/init/*.sql` to it, and drop it afterwards. They exercise the real schema and constraints but never read or overwrite the data that `make load` imported, and they do not depend on running the loader first.
+- `make lint` passes: ruff (lint and format) and mypy in strict mode, with no `type: ignore`. The one exception is two `# noqa: E402` in `scripts/load_data.py`: `make load` runs the file as a script, which puts `scripts/` rather than the project root on `sys.path`, so the root is added before importing `app` and `scripts`. The alternative, `python -m scripts.load_data`, would change the command the README documents.
+
 ## Scale
 
 ### Loader
