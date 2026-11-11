@@ -1,7 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from psycopg.errors import QueryCanceled
+from psycopg_pool import PoolTimeout
 from pydantic import BaseModel
 
 from app import records
@@ -17,6 +20,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Coffee Health API", lifespan=lifespan)
 app.include_router(records.router)
+
+
+# Overload fails fast with 503 instead of hanging and ending in a 500, so clients can
+# back off and retry while the rest of the API keeps answering.
+@app.exception_handler(QueryCanceled)
+def query_cancelled(request: Request, exc: QueryCanceled) -> JSONResponse:
+    return JSONResponse(
+        status_code=503, content={"detail": "The query took too long and was cancelled."}
+    )
+
+
+@app.exception_handler(PoolTimeout)
+def pool_exhausted(request: Request, exc: PoolTimeout) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The service is busy, try again shortly."},
+        headers={"Retry-After": "1"},
+    )
 
 
 class Health(BaseModel):
