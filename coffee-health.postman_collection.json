@@ -1,0 +1,663 @@
+{
+  "info": {
+    "name": "Coffee Health API",
+    "description": "Requests for the coffee health take-home API. Start it with `make db-reset && make load && make dev`; `baseUrl` defaults to http://localhost:8000. Run the folders in order: \"Next page\" uses the cursor saved by \"First page\".",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "cursor",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"database is ok\", () => pm.expect(body.database).to.eql(\"ok\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Pagination",
+      "item": [
+        {
+          "name": "First page",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?limit=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "Saves `next_cursor` for the next request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"at most 5 items\", () => pm.expect(body.items.length).to.be.at.most(5));",
+                  "pm.test(\"returns a cursor\", () => pm.expect(body.next_cursor).to.be.a(\"string\"));",
+                  "pm.collectionVariables.set(\"cursor\", body.next_cursor);",
+                  "pm.collectionVariables.set(\"lastId\", body.items[body.items.length - 1].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next page",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?limit=5&cursor={{cursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{cursor}}"
+                }
+              ]
+            },
+            "description": "Uses the cursor saved by the previous request; run it again to keep paging."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "const lastId = Number(pm.collectionVariables.get(\"lastId\"));",
+                  "pm.test(\"continues after the previous page\", () => pm.expect(body.items[0].id).to.be.above(lastId));",
+                  "pm.collectionVariables.set(\"cursor\", body.next_cursor || \"\");",
+                  "if (body.items.length) pm.collectionVariables.set(\"lastId\", body.items[body.items.length - 1].id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Filters",
+      "item": [
+        {
+          "name": "Several countries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?country=Japan&country=Spain",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "country",
+                  "value": "Japan"
+                },
+                {
+                  "key": "country",
+                  "value": "Spain"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"every record is from Japan or Spain\", () => body.items.forEach(i => pm.expect([\"Japan\", \"Spain\"].includes(i.country)).to.be.true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gender and age range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?gender=Female&min_age=30&max_age=40",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "gender",
+                  "value": "Female"
+                },
+                {
+                  "key": "min_age",
+                  "value": "30"
+                },
+                {
+                  "key": "max_age",
+                  "value": "40"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"female, aged 30 to 40\", () => body.items.forEach(i => pm.expect(i.gender === \"Female\" && i.age >= 30 && i.age <= 40).to.be.true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sleep quality and stress level",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?sleep_quality=Poor&stress_level=High",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "sleep_quality",
+                  "value": "Poor"
+                },
+                {
+                  "key": "stress_level",
+                  "value": "High"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"poor sleep and high stress\", () => body.items.forEach(i => pm.expect(i.sleep_quality === \"Poor\" && i.stress_level === \"High\").to.be.true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Coffee intake and BMI ranges",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?min_coffee_intake=3&max_coffee_intake=5&min_bmi=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "min_coffee_intake",
+                  "value": "3"
+                },
+                {
+                  "key": "max_coffee_intake",
+                  "value": "5"
+                },
+                {
+                  "key": "min_bmi",
+                  "value": "25"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"within both ranges\", () => body.items.forEach(i => pm.expect(i.coffee_intake >= 3 && i.coffee_intake <= 5 && i.bmi >= 25).to.be.true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sleep hours range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?min_sleep_hours=8&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "min_sleep_hours",
+                  "value": "8"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"at least 8 hours of sleep\", () => body.items.forEach(i => pm.expect(i.sleep_hours >= 8).to.be.true));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Summary",
+      "item": [
+        {
+          "name": "Average by country",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records/summary?group_by=country",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "country"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"one row per country\", () => pm.expect(body.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stress level in Japan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records/summary?group_by=stress_level&country=Japan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "stress_level"
+                },
+                {
+                  "key": "country",
+                  "value": "Japan"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"groups are stress levels\", () => body.forEach(r => pm.expect([\"Low\", \"Medium\", \"High\"]).to.include(r.group)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Validation errors (422)",
+      "item": [
+        {
+          "name": "min_age greater than max_age",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?min_age=50&max_age=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "min_age",
+                  "value": "50"
+                },
+                {
+                  "key": "max_age",
+                  "value": "30"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"min_age must not be greater than max_age\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown gender",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?gender=male",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "gender",
+                  "value": "male"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"gender\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown parameter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?contry=Japan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "contry",
+                  "value": "Japan"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"contry\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid cursor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?cursor=not-a-cursor",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "not-a-cursor"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"invalid cursor\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Limit above 100",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records?limit=101",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "101"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"limit\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown summary grouping",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/records/summary?group_by=bmi",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "group_by",
+                  "value": "bmi"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 422\", () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"explains the error\", () => pm.expect(JSON.stringify(body.detail)).to.include(\"group_by\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

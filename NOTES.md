@@ -51,6 +51,7 @@ Result: `read 10,012, loaded 9,973 (fixed 58), rejected 23, duplicated 8, quaran
 - **Keyset pagination on `id`**: no row is repeated or skipped between pages. The cursor is opaque (base64 of the last id). No total count, which would count every match on every request.
 - **422** for `min_* > max_*`, unknown categories (`gender=male`), invalid cursor, `limit` out of range and unknown parameters (`contry=Japan`).
 - `GET /records/summary?group_by=country` (or `gender`, `sleep_quality`, `stress_level`, `occupation`): count and averages per group, same filters.
+- **Postman**: import `coffee-health.postman_collection.json`. It covers health, cursor pagination (the cursor is saved between requests), each filter, the summary and every 422 case, with a test on each response.
 
 ## Tests and code quality
 
