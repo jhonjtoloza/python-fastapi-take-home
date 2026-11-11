@@ -1,184 +1,102 @@
 # Notes
 
-## How to run
-
 ```bash
-make db-reset   # apply the schema in db/init to a fresh database
-make load       # import data/coffee_health_raw.csv
-make dev        # API on http://localhost:8000/docs
-make test       # loader tests use a throwaway database; your data is not touched
+make db-reset && make load && make dev   # API on http://localhost:8000/docs
+make test                                # DB tests use a throwaway database
 ```
 
 ## Schema
 
 | Table | Purpose |
 | --- | --- |
-| `coffee_health` | One row per person. `id` is the CSV `ID` and the primary key, so loads upsert instead of duplicating. |
-| `imports` | One row per loader run: file name, SHA-256, size, status (`processing`, `completed`, `failed`), row counters, error. |
-| `rejected_rows` | Rows that could not be loaded: import, line number, raw line, list of reasons. |
-| `duplicate_conflicts` | Quarantine for IDs that appear more than once with different values (see below). |
+| `coffee_health` | One row per person; `id` is the CSV `ID` and the primary key, so loads upsert instead of duplicating. |
+| `imports` | One row per loader run: file name, SHA-256, status (`processing`, `completed`, `failed`), row counters, error. |
+| `rejected_rows` | Rows that could not be loaded: line number, raw line, list of reasons. |
+| `duplicate_conflicts` | Quarantine for IDs that appear with different values. |
 
-- Types follow the data: `smallint` for age and heart rate, `numeric(p,1)` for decimals (no float rounding), `boolean` for smoking and alcohol.
-- Every limit and category is also a `CHECK` constraint. The loader validates first; the database is a second line of defense for writes that bypass it.
-- `coffee_health.import_id` records which import last wrote the row. It is deliberately **not a foreign key**: on a 1M-row load the per-row FK check took about 40% of the insert time, the loader always writes the `imports` row first, and `imports` rows are never deleted.
+- Types follow the data (`smallint`, `numeric(p,1)`, `boolean`), and every limit and category is also a `CHECK` constraint, a second line of defense behind the loader.
+- `coffee_health.import_id` is deliberately not a foreign key: the per-row check took ~40% of the insert time on 1M rows, and `imports` rows are never deleted.
 
 ## Loading and cleaning
 
-The loader (`scripts/load_data.py`) streams the file:
+`scripts/load_data.py` streams the file. Python validates and normalizes each record (`scripts/validation.py`, pure functions) and `COPY`s it into a temporary staging table; SQL then deduplicates, quarantines and upserts. Everything runs in one transaction: a failed run leaves no partial data and its import is marked `failed`.
 
-1. Python parses, validates and normalizes each record (`scripts/validation.py`, pure functions, unit tested without a database) and streams every record, valid or not, into a temporary staging table with `COPY ... FROM STDIN`.
-2. SQL resolves duplicate IDs, stores rejected and quarantined rows, and upserts into `coffee_health`.
-
-Steps 1 and 2 run in one transaction: a failed run leaves no partial data, and its `imports` row is marked `failed` with the error.
-
-### Plausibility limits (inclusive)
-
-| Column | Limits | Rejected examples in the dataset |
+| Column | Limits (inclusive) | Rejected in the dataset |
 | --- | --- | --- |
-| Age | 18–120 (adults) | -3, 150, 212 |
+| Age | 18–120 | -3, 150, 212 |
 | Sleep_Hours | 0–24 | -1, 25 |
 | BMI | 10–80 | 0 |
-| Heart_Rate | 25–250 bpm | 0, 350 |
-| Coffee_Intake | 0–30 cups/day | |
-| Caffeine_mg | 0–3000 mg/day | |
-| Physical_Activity_Hours | 0–168 h/week | |
+| Heart_Rate | 25–250 | 0, 350 |
+| Coffee_Intake / Caffeine_mg / Physical_Activity_Hours | 0–30 / 0–3000 / 0–168 | |
 
 ### Business decisions
 
-Several cases have no single right answer. These are the choices made, and why.
+- **Fixed and loaded** (`fixed`): whitespace and letter case in categories (`"\tMale  "`, `belgium`); booleans as words (`yes`, `Y`, `false`); a letter O typed for a zero next to a digit (`4O` → 40, line 1918); trailing extra columns (line 2659 ends with `,extra`); decimals rounded to one place. If extra columns shift the values instead, validation rejects the row.
+- **Rejected** (`rejected_rows`, to fix at the source and load again): missing values and placeholders (`N/A`, `?`, `unknown`), numbers as words (`thirty`), values outside the limits, rows with fewer than 16 columns, invalid CSV, unknown countries (a closed list, so a misspelling never becomes a new filter value).
+- **Same ID, same values**: an exact copy, loaded once and counted as `duplicated`. `ID` identifies a person, so a copy is not a new event.
+- **Same ID, different values** (IDs 3338, 6115, 6748, 7494): no way to tell which is right, so **no version is loaded**; all go to `duplicate_conflicts` for a person to decide. A table in the same database keeps the load and the quarantine in one transaction. To promote the right version:
 
-**Fixed and loaded** (counted as `fixed`):
+  ```bash
+  uv run python -c "import psycopg; from app.config import settings; from scripts.load_data import PROMOTE_CONFLICT; psycopg.connect(settings.database_url, autocommit=True).execute(PROMOTE_CONFLICT, {'id': 3338, 'line_number': 3339})"
+  ```
 
-- Surrounding whitespace, tabs and letter case in categories: `"\tMale  "`, `MALE`, `belgium`, `GOOD` become `Male`, `Belgium`, `Good`.
-- Booleans written as words: `yes`, `Y`, `true` become `1`; `no`, `false` become `0`.
-- A letter O typed for a zero in an integer, when the value also has a real digit: `4O` becomes `40` (line 1918). A lone `O` is still rejected.
-- Trailing extra columns are dropped: line 2659 ends with `,extra` and its first 16 values are valid. If an extra column shifted the values instead, those values fail validation and the row is rejected.
-- Decimals with more than one decimal place are rounded half up to one decimal.
+- **Re-running**: the same file (by SHA-256) is imported once; running it again prints the stored summary. A different file with known IDs updates them (newest wins). An advisory lock stops two loaders on the same file, and an import left `processing` by a dead loader is marked `failed` and retried.
 
-**Rejected** (stored in `rejected_rows`, to be fixed at the source and loaded again):
-
-- Missing values, placeholders such as `N/A`, `n/a`, `?` or `unknown`, and numbers written as words (`thirty`, `seven`).
-- Values outside the limits above.
-- Rows with fewer than 16 columns: there is no way to know which values are missing.
-- Countries outside the known list. An unknown spelling would otherwise become a new filter value; adding a real country is a one-line change in `scripts/validation.py`.
-- Records that are not valid CSV (for example an unclosed quote) and booleans other than the spellings above (`-1`, `2`).
-
-**Duplicate IDs:**
-
-- **Same ID, same values**: an exact copy. Loaded once and counted as `duplicated`. `ID` identifies a person, so a copy carries no new information; it is not an event to be counted.
-- **Same ID, different values** (IDs 3338, 6115, 6748, 7494: age and heart rate differ): there is no way to tell which version is correct. **No version is loaded.** All of them go to `duplicate_conflicts` for a person to review. Rejecting them would lose the choice; picking one automatically (first or last) would publish a guess.
-
-To promote the right version after review (here, line 3339 for ID 3338):
-
-```sql
--- Same statement as PROMOTE_CONFLICT in scripts/load_data.py
-with chosen as (
-  select * from duplicate_conflicts
-  where id = 3338 and line_number = 3339 and resolved_at is null
-),
-promoted as (
-  insert into coffee_health (id, age, gender, country, coffee_intake, caffeine_mg,
-    sleep_hours, sleep_quality, bmi, heart_rate, stress_level, physical_activity_hours,
-    health_issues, occupation, smoking, alcohol_consumption, import_id)
-  select id, age, gender, country, coffee_intake, caffeine_mg, sleep_hours,
-    sleep_quality, bmi, heart_rate, stress_level, physical_activity_hours,
-    health_issues, occupation, smoking, alcohol_consumption, import_id
-  from chosen
-  on conflict (id) do update set (age, gender, country, coffee_intake, caffeine_mg,
-    sleep_hours, sleep_quality, bmi, heart_rate, stress_level, physical_activity_hours,
-    health_issues, occupation, smoking, alcohol_consumption, import_id)
-  = (excluded.age, excluded.gender, excluded.country, excluded.coffee_intake,
-    excluded.caffeine_mg, excluded.sleep_hours, excluded.sleep_quality, excluded.bmi,
-    excluded.heart_rate, excluded.stress_level, excluded.physical_activity_hours,
-    excluded.health_issues, excluded.occupation, excluded.smoking,
-    excluded.alcohol_consumption, excluded.import_id)
-)
-update duplicate_conflicts set resolved_at = now()
-where id = 3338 and resolved_at is null and exists (select 1 from chosen);
-```
-
-A separate table in the same database was chosen over a separate database: moving rows between Postgres databases needs `dblink` or a foreign data wrapper, and the load and the quarantine would no longer commit atomically.
-
-**Re-running:**
-
-- The same file (same SHA-256) is imported once. Running it again prints the stored summary and changes nothing.
-- A different file containing IDs that are already loaded updates those rows: the newest import wins. Unchanged rows are not rewritten.
-- If a loader dies mid-run, its import stays `processing`. The next run detects it through a Postgres advisory lock (held only while a loader is alive), marks it `failed` and retries. Two loaders started on the same file at the same time cannot both run.
-
-### Result on the provided dataset
-
-```
-read 10,012, loaded 9,973 (fixed 58), rejected 23, duplicated 8, quarantined 8
-```
-
-`read = loaded + rejected + duplicated + quarantined`. Blank lines (3) are not records and are not counted. `select count(*) from coffee_health` returns 9,973.
-
-## Tests and code quality
-
-`make test` runs 81 tests. Behavior was written test-first: each rule had a failing test before its code.
-
-| File | Tests | Database |
-| --- | --- | --- |
-| `tests/test_validation.py` | 47: every fix, every rejection reason, inclusive limits, column count | **None**. Validation is pure functions; the file passes with `DATABASE_URL` pointing to an unreachable host. |
-| `tests/test_loader.py` | 7: counts and stored rows, idempotent re-run, upsert of a changed file, malformed CSV, wrong header, abandoned import, promoting a quarantined row | Real Postgres |
-| `tests/test_records_api.py` | 25: `TestClient` against the app with filters, pagination, summary and every 422 case | Real Postgres |
-| `tests/test_health.py` | 2: the original `/health` and `/notes` checks | Real Postgres, the `coffee` database |
-
-- Database tests create a throwaway database (`coffee_test_<random>`), apply `db/init/*.sql` to it, and drop it afterwards. They exercise the real schema and constraints but never read or overwrite the data that `make load` imported, and they do not depend on running the loader first.
-- `make lint` passes: ruff (lint and format) and mypy in strict mode, with no `type: ignore`. The one exception is two `# noqa: E402` in `scripts/load_data.py`: `make load` runs the file as a script, which puts `scripts/` rather than the project root on `sys.path`, so the root is added before importing `app` and `scripts`. The alternative, `python -m scripts.load_data`, would change the command the README documents.
-
-## Scale
-
-### Loader
-
-- **Memory is constant**: the file is read line by line and streamed with `COPY`; duplicates are resolved in SQL, not in a Python dictionary. Peak memory was ~50 MB for 1M rows.
-- **Measured on 1,001,200 rows** (the dataset repeated with new IDs, Postgres in Docker on a laptop): 43 s in total. Parsing in Python takes ~10 s per million rows; most of the rest is the insert into `coffee_health` and its indexes.
-- **Extrapolated to 100M rows**: roughly 70 minutes, with the same memory. The staging table needs about twice the CSV size in temporary disk space while the load runs.
-- `EXPLAIN ANALYZE` drove one change: the foreign key on `import_id` was removed (41 s to 25 s for the insert). Raising `work_mem` to avoid the on-disk sort made no measurable difference, so it was left at the default.
-- Not done, would be the next steps at that size: drop the secondary indexes for an initial load and rebuild them afterwards (~9 s per million rows), parse in several processes, and avoid storing the raw line of valid rows in staging.
-
-### API
-
-Measured with `EXPLAIN ANALYZE` on 1M generated rows (table 128 MB, indexes 124 MB):
-
-| Query | Plan | Time |
-| --- | --- | --- |
-| Page 1 (`order by id limit 21`) | primary key index | 0.1 ms |
-| Page 40,000 with the cursor (`id > 800000`) | primary key index | 0.1 ms |
-| Page 40,000 with `OFFSET 800000`, for comparison | reads and discards 800,000 rows | 219 ms |
-| `country=Japan` on a deep page | primary key, filters 389 rows | 0.2 ms |
-| A rare range (`min_bmi=37.9`) | `bmi` index, then sort | 0.1 ms |
-| Summary by country, `min_age=30` | parallel sequential scan | ~85 ms |
-| Unindexed filters that match almost nothing | walks the whole primary key | 180 ms |
-
-- **Pagination does not degrade with depth**: the cursor turns "page N" into an index seek. `OFFSET` grows linearly and would take seconds per request at tens of millions of rows.
-- **Common filters stay cheap** because they match many rows: walking the primary key in order stops after `limit` matches. Indexes matter for selective ranges, where Postgres switches to the column index and sorts the few matches.
-- **Worst case**: a combination of filters that matches almost nothing, on columns without a selective index, scans the whole table (180 ms at 1M rows, roughly 18 s at 100M). Mitigations, not implemented: a `statement_timeout` on the API's connections so one request cannot hold a connection for long, composite indexes for combinations that real traffic uses, or a materialized summary table.
-- **Index cost on writes**: the four secondary indexes cost ~9 s per million rows on the load (see Loader). Each one was chosen for a filter that can be selective; low-cardinality columns are not indexed.
-- **Summary** reads every matching row by design. At tens of millions of rows it should come from a pre-aggregated table refreshed after each import.
-
-### Connections under concurrent load
-
-- Endpoints are synchronous (`def`), so FastAPI runs them in its thread pool (40 threads by default). Each request borrows one connection from a `psycopg_pool` pool of at most 10 and returns it when the response is built.
-- With more than 10 concurrent requests, the rest wait for a free connection. That is deliberate: Postgres handles a few busy connections better than many, and the limit protects the database. A request that waits longer than the pool timeout (30 s by default) fails with a 500.
-- Every query is a single indexed statement, so connections are held for milliseconds and the pool turns over quickly. The slow cases above are the ones that would exhaust it, which is why a `statement_timeout` is the first thing I would add.
-- With several API processes, the total is processes × 10 connections; beyond Postgres' `max_connections` that calls for PgBouncer in transaction mode.
+Result: `read 10,012, loaded 9,973 (fixed 58), rejected 23, duplicated 8, quarantined 8`. `read = loaded + rejected + duplicated + quarantined`; the 3 blank lines are not records.
 
 ## API
 
-`GET /records` returns filtered records ordered by `id`:
+`GET /records`: filters `country`, `gender`, `sleep_quality`, `stress_level` (repeat to select several), inclusive ranges `min_`/`max_` for `age`, `coffee_intake`, `bmi`, `sleep_hours`, all combined with AND. `limit` 1–100 (default 20) and `cursor`; the response is `{"items": [...], "next_cursor": ...}`.
 
-| Parameter | Behavior |
+- **Keyset pagination on `id`**: no row is repeated or skipped between pages. The cursor is opaque (base64 of the last id). No total count, which would count every match on every request.
+- **422** for `min_* > max_*`, unknown categories (`gender=male`), invalid cursor, `limit` out of range and unknown parameters (`contry=Japan`).
+- `GET /records/summary?group_by=country` (or `gender`, `sleep_quality`, `stress_level`, `occupation`): count and averages per group, same filters.
+
+## Tests and code quality
+
+85 tests, written before the code they cover. `tests/test_validation.py` (47) needs no database: it passes with `DATABASE_URL` pointing to an unreachable host. Loader (7), API (25), resilience (4) and health (2) tests run against real Postgres: each creates a throwaway database with `db/init/*.sql`, so they never touch loaded data. `make lint` passes with no `type: ignore`; the only exception is two `# noqa: E402` in `scripts/load_data.py`, which adds the project root to `sys.path` so `make load` can keep running it as a script.
+
+## Scale
+
+**Priority: the API stays responsive.** An import runs occasionally and can take longer; when the two compete (indexes, above all), the API wins.
+
+### Loader
+
+- **Constant memory**: line-by-line reading, `COPY` streaming, duplicates resolved in SQL. ~50 MB peak on 1M rows.
+- **1M rows in 43 s**; about 70 minutes for 100M. Parsing is ~10 s per million; most of the rest is inserting into the indexed table. Measured with four secondary indexes; the three added later for the API were not re-measured.
+- Indexes stay in place during loads (dropping them would save ~9 s per million, but load time is not critical).
+- Next steps if imports must coexist with traffic: batches with a commit every N rows, or a job queue, to spread the disk pressure of one long transaction; parsing in several processes.
+
+### API
+
+`EXPLAIN ANALYZE` on 1M generated rows:
+
+| Query | Time |
 | --- | --- |
-| `country`, `gender`, `sleep_quality`, `stress_level` | Exact match on the allowed values; repeat the parameter to select several (`?country=Japan&country=Spain`, OR). |
-| `min_age` / `max_age`, `min_coffee_intake` / `max_coffee_intake`, `min_bmi` / `max_bmi`, `min_sleep_hours` / `max_sleep_hours` | Inclusive ranges. |
-| `limit` | 1–100, default 20. |
-| `cursor` | The `next_cursor` of the previous page. |
+| Page 1, and page 40,000 with the cursor | 0.1 ms each |
+| Page 40,000 with `OFFSET`, for comparison | 219 ms |
+| `country=Japan` on a deep page | 0.2 ms |
+| Empty `sleep_hours` range | 35 ms → 0.1 ms with its index |
+| `gender` + `stress_level` + `sleep_quality` matching nothing | 170 ms → 0.1 ms |
+| Summary by country | ~85 ms |
 
-All filters combine with AND. The response is `{"items": [...], "next_cursor": "..."}`; `next_cursor` is `null` on the last page.
+- Common filters match many rows, so walking the primary key stops after `limit` matches; every range filter has an index for the selective cases.
+- Stress level and sleep quality are correlated, but Postgres assumes independent columns, expected thousands of matches and walked the whole table. A composite index alone did not change the plan; extended statistics (`create statistics ... (mcv)`) together with the index `(gender, stress_level, sleep_quality)` did.
+- Low-cardinality columns alone (`gender=Female`) are fast without their own index.
 
-- **Keyset pagination on `id`**, the primary key: unique and stable, so no row is repeated or skipped between pages. The cursor is opaque (base64 of the last id) so the sort can change later without breaking clients. There is no total count: it would need to count every matching row on every request.
-- **422 errors** for `min_*` greater than `max_*`, values outside the allowed categories (`gender=male`), an invalid cursor, `limit` out of range, and **unknown parameters**: a typo like `contry=Japan` is rejected instead of silently returning every row.
-- Category values are case-sensitive and must match the canonical spelling; the allowed values are listed in `/docs`.
+### Connections under concurrent load
 
-`GET /records/summary?group_by=country` (also `gender`, `sleep_quality`, `stress_level`, `occupation`) returns count and average sleep hours, coffee intake and BMI per group, with the same filters.
+Synchronous endpoints run in FastAPI's thread pool; each request borrows one connection from a pool of 10. 50 concurrent clients, one API process, 1M rows:
+
+| Traffic | Before | After |
+| --- | --- | --- |
+| Typical filters | 666 req/s, 0 errors | 664 req/s, p99 102 ms, 0 errors |
+| Combination matching nothing | **2 req/s, 160/300 failed with 500 after 30 s** | 797 req/s, p99 78 ms, 0 errors |
+| Summary (full scan each) | not measured | 9 req/s, 98/300 answered 503 |
+
+A few slow queries held all 10 connections and every other request queued until it failed. Now:
+
+- `statement_timeout` 3 s (`STATEMENT_TIMEOUT_MS`): slow queries are cancelled with **503**.
+- Pool timeout 5 s (`POOL_TIMEOUT_S`): no free connection means **503** with `Retry-After: 1`, not a 500 after 30 s.
+- All connections open at startup (`POOL_MAX_SIZE`): growing the pool under a burst caused 36 errors on a cold start; now none.
+- Remaining limit: the summary at that rate needs a pre-aggregated table. Several API processes multiply connections; past `max_connections`, PgBouncer.

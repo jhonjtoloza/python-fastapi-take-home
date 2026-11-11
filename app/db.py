@@ -16,9 +16,15 @@ def create_pool() -> Pool:
     pool: Pool = ConnectionPool(
         settings.database_url,
         connection_class=Connection[DictRow],
-        kwargs={"row_factory": dict_row},
-        min_size=1,
-        max_size=10,
+        kwargs={
+            "row_factory": dict_row,
+            "options": f"-c statement_timeout={settings.statement_timeout_ms}",
+        },
+        # Open every connection at startup: growing the pool under a burst of traffic
+        # made early requests wait past the pool timeout and fail with 503.
+        min_size=settings.pool_max_size,
+        max_size=settings.pool_max_size,
+        timeout=settings.pool_timeout_s,
         open=False,
     )
     pool.open(wait=True)

@@ -37,6 +37,17 @@ create index coffee_health_country_id_idx on public.coffee_health (country, id);
 create index coffee_health_age_idx on public.coffee_health (age);
 create index coffee_health_coffee_intake_idx on public.coffee_health (coffee_intake);
 create index coffee_health_bmi_idx on public.coffee_health (bmi);
+create index coffee_health_sleep_hours_idx on public.coffee_health (sleep_hours);
+
+-- Combinations of low-cardinality filters can match almost nothing (stress level and
+-- sleep quality are correlated). By default the planner assumes independent columns,
+-- expects thousands of matches and walks the whole primary key looking for them. The
+-- statistics teach it the real combinations; the index gives it a direct path.
+create index coffee_health_gender_stress_sleep_idx
+  on public.coffee_health (gender, stress_level, sleep_quality);
+create statistics coffee_health_categories_stats (mcv)
+  on country, gender, stress_level, sleep_quality
+  from public.coffee_health;
 
 -- Quarantine: every version of an ID that appears more than once with different values.
 -- None of them reaches coffee_health until someone picks the right one (see NOTES.md).
